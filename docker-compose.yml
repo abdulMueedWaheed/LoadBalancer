@@ -1,0 +1,24 @@
+version: '3'
+
+services:
+  controller:
+    build: ./controller
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs:z
+
+  node1:
+    build: ./node
+    environment:
+      - NODE_ID=1
+
+  node2:
+    build: ./node
+    environment:
+      - NODE_ID=2
+
+  node3:
+    build: ./node
+    environment:
+      - NODE_ID=3
