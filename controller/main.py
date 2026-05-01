@@ -201,7 +201,7 @@ def route():
             active_connections[node] += 1
 
         try:
-            res = requests.get(node, timeout=2.0)
+            res = requests.get(node, timeout=6.0)
             res.raise_for_status()
             data = res.json()
 

@@ -28,5 +28,5 @@ services:
 
     environment:
       NODE_ID: "3"
-      MIN_DELAY: "3"
-      MAX_DELAY: "5"
+      MIN_DELAY: "1.5"
+      MAX_DELAY: "3"
