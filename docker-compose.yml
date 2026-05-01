@@ -1,24 +1,32 @@
-version: '3'
-
 services:
   controller:
     build: ./controller
     ports:
       - "8000:8000"
+
     volumes:
       - ./logs:/app/logs:z
 
   node1:
     build: ./node
+
     environment:
-      - NODE_ID=1
+      NODE_ID: "1"
+      MIN_DELAY: "0.1"
+      MAX_DELAY: "0.5"
 
   node2:
     build: ./node
+
     environment:
-      - NODE_ID=2
+      NODE_ID: "2"
+      MIN_DELAY: "1"
+      MAX_DELAY: "2"
 
   node3:
     build: ./node
+
     environment:
-      - NODE_ID=3
+      NODE_ID: "3"
+      MIN_DELAY: "3"
+      MAX_DELAY: "5"
