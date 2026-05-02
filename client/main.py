@@ -73,7 +73,7 @@ def _send_request(req_id: int, url: str, timeout: float) -> dict:
     return result
 
 
-# ── Traffic-pattern schedulers ────────────────────────────────────────────────
+# Traffic-pattern schedulers 
 def _schedule_steady(n_requests: int, concurrency: int, interval: float,
                      url: str, timeout: float) -> list:
     """Even, steady stream of requests."""
