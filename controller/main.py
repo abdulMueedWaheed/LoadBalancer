@@ -4,6 +4,7 @@ import time
 import csv
 import uuid
 import os
+import math
 import threading
 from abc import ABC, abstractmethod
 
@@ -73,6 +74,10 @@ class LoadBalancerStrategy(ABC):
     def select_node(self, active_nodes: list, connections: dict) -> str:
         pass
 
+    def record_result(self, node: str, latency_ms: float, success: bool):
+        """Called after each request so strategies can learn. Override if needed."""
+        pass
+
 class RoundRobinStrategy(LoadBalancerStrategy):
     def __init__(self):
         self._index = 0
@@ -101,9 +106,78 @@ class LeastConnectionsStrategy(LoadBalancerStrategy):
             self._rr = (self._rr + 1) % len(candidates)
             return node
 
+class UCBStrategy(LoadBalancerStrategy):
+    """Upper Confidence Bound (UCB1) strategy.
+
+    Reward definition:  reward = 1 / (1 + latency_ms / 1000)
+        → lower latency  ⇒  higher reward  (close to 1.0)
+        → higher latency  ⇒  lower reward   (approaches 0.0)
+        → failure/timeout  ⇒  reward = 0.0
+
+    Node score:  avg_reward + c * sqrt(ln(total_pulls) / node_pulls)
+        The first term exploits fast nodes; the second explores underused ones.
+    """
+
+    def __init__(self, c: float = 1.414):
+        self._lock        = threading.Lock()
+        self._c           = c               # exploration constant (sqrt(2) by default)
+        self._total_pulls = 0
+        self._node_pulls  = {}              # node -> int
+        self._node_reward  = {}             # node -> cumulative reward sum
+
+    def _ensure_node(self, node: str):
+        if node not in self._node_pulls:
+            self._node_pulls[node]  = 0
+            self._node_reward[node] = 0.0
+
+    def select_node(self, active_nodes: list, connections: dict) -> str:
+        with self._lock:
+            if not active_nodes:
+                return None
+
+            for n in active_nodes:
+                self._ensure_node(n)
+
+            # Phase 1: try each node at least once (exploration bootstrap)
+            for n in active_nodes:
+                if self._node_pulls[n] == 0:
+                    return n
+
+            # Phase 2: UCB1 score
+            best_node  = None
+            best_score = -1.0
+
+            for n in active_nodes:
+                avg_reward = self._node_reward[n] / self._node_pulls[n]
+                explore    = self._c * math.sqrt(
+                    math.log(self._total_pulls) / self._node_pulls[n]
+                )
+                score = avg_reward + explore
+
+                if score > best_score:
+                    best_score = score
+                    best_node  = n
+
+            return best_node
+
+    def record_result(self, node: str, latency_ms: float, success: bool):
+        with self._lock:
+            self._ensure_node(node)
+            self._total_pulls += 1
+            self._node_pulls[node] += 1
+
+            if success:
+                # reward ∈ (0, 1] — lower latency gives higher reward
+                reward = 1.0 / (1.0 + latency_ms / 1000.0)
+            else:
+                reward = 0.0
+
+            self._node_reward[node] += reward
+
 algorithms = {
     "round_robin":       RoundRobinStrategy(),
     "least_connections": LeastConnectionsStrategy(),
+    "ucb":               UCBStrategy(),
 }
 
 # ── CSV helpers ────────────────────────────────────────────────────────────────
@@ -213,6 +287,7 @@ def route():
                 n_count = node_request_count[node]
 
             metrics.record_success(latency_ms)
+            strategy.record_result(node, latency_ms, success=True)
 
             _append_main([
                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -235,6 +310,7 @@ def route():
                 request_id, node, "timeout", last_error,
             ])
             print(f"[TIMEOUT] {node}")
+            strategy.record_result(node, 6000.0, success=False)
             tried_nodes.add(node)
 
         except requests.RequestException as e:
@@ -244,6 +320,7 @@ def route():
                 request_id, node, type(e).__name__, last_error,
             ])
             print(f"[FAIL] {node}: {e}")
+            strategy.record_result(node, 6000.0, success=False)
             tried_nodes.add(node)
 
         finally:
