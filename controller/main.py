@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 import requests
 import time
+import calendar
 import csv
 import uuid
 import os
@@ -10,6 +11,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional, cast
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from collections import deque
 
 # ── Algorithm selection ────────────────────────────────────────────────────────
 DEFAULT_ALGORITHM = "least_connections"
@@ -19,6 +21,7 @@ ALGO_PREFIX: dict[str, str] = {
     "round_robin":       "rr",
     "least_connections": "lc",
     "ucb":               "ucb",
+    "metric_aware":      "ma",
 }
 
 # ── Log file paths (resolved at startup) ──────────────────────────────────────
@@ -35,6 +38,10 @@ nodes: list[str] = [
 active_connections: dict[str, int] = {node: 0 for node in nodes}
 node_request_count: dict[str, int] = {node: 0 for node in nodes}
 connections_lock   = threading.Lock()
+FAILURE_WINDOW = 50
+node_failure_window: dict[str, deque[int]] = {
+    node: deque(maxlen=FAILURE_WINDOW) for node in nodes
+}
 
 # ── In-memory metrics tracker ──────────────────────────────────────────────────
 class MetricsTracker:
@@ -176,10 +183,85 @@ class UCBStrategy(LoadBalancerStrategy):
 
             self._node_reward[node] += reward
 
+
+class MetricAwareStrategy(LoadBalancerStrategy):
+    """Weighted score strategy with stale-metric fallback behavior.
+
+    Lower score is better.
+    score = w1*active_connections + w2*(latency_ms/100) + w3*queue_depth + w4*failure_count_recent
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._rr = 0
+        self._w_active = 1.0
+        self._w_latency = 0.02
+        self._w_queue = 1.5
+        self._w_failure = 2.0
+        self._stale_after_seconds = 15
+
+    def _node_id_from_url(self, node_url: str) -> str:
+        # http://node2:8000 -> "2"
+        return node_url.split("//")[1].replace(":8000", "").replace("node", "")
+
+    def _parse_ts(self, ts: Any) -> Optional[float]:
+        if not isinstance(ts, str) or not ts:
+            return None
+        try:
+            return float(calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")))
+        except ValueError:
+            return None
+
+    def select_node(self, active_nodes: list[str], connections: dict[str, int]) -> Optional[str]:
+        with self._lock:
+            if not active_nodes:
+                return None
+
+            best_score = float("inf")
+            candidates: list[str] = []
+            now_epoch = time.time()
+
+            for node in active_nodes:
+                node_id = self._node_id_from_url(node)
+                latest = node_metrics.get(node_id, {})
+                raw_latency = latest.get("latency", metrics.snapshot().get("avg_ms", 0.0))
+                raw_queue = latest.get("queue_depth", 0)
+                raw_ts = latest.get("timestamp")
+
+                latency_ms = float(raw_latency) if isinstance(raw_latency, (int, float)) else 0.0
+                queue_depth = int(raw_queue) if isinstance(raw_queue, (int, float)) else 0
+                failure_recent = sum(node_failure_window[node])
+                active_conn = connections.get(node, 0)
+
+                score = (
+                    self._w_active * active_conn
+                    + self._w_latency * (latency_ms / 100.0)
+                    + self._w_queue * queue_depth
+                    + self._w_failure * failure_recent
+                )
+
+                ts_epoch = self._parse_ts(raw_ts)
+                if ts_epoch is None or (now_epoch - ts_epoch) > self._stale_after_seconds:
+                    # stale feedback penalty; encourages fresher feedback nodes
+                    score += 3.0
+
+                if score < best_score:
+                    best_score = score
+                    candidates = [node]
+                elif score == best_score:
+                    candidates.append(node)
+
+            # round-robin tie-break among equally scored nodes
+            node = candidates[self._rr % len(candidates)]
+            self._rr = (self._rr + 1) % len(candidates)
+            return node
+
+
 algorithms: dict[str, LoadBalancerStrategy] = {
     "round_robin":       RoundRobinStrategy(),
     "least_connections": LeastConnectionsStrategy(),
     "ucb":               UCBStrategy(),
+    "metric_aware":      MetricAwareStrategy(),
 }
 
 # ── CSV helpers ────────────────────────────────────────────────────────────────
@@ -270,7 +352,14 @@ app = FastAPI(lifespan=lifespan)
 
 # ── Route ──────────────────────────────────────────────────────────────────────
 @app.get("/")
-def route() -> dict[str, Any]:
+def route(
+    task: str = "simulate",
+    query_type: str = "point",
+    key: int = 1,
+    start_key: int = 1,
+    end_key: int = 1000,
+    limit: int = 100,
+) -> dict[str, Any]:
     request_id = str(uuid.uuid4())
     ts_start   = time.time()
     strategy   = algorithms.get(ALGORITHM, algorithms["round_robin"])
@@ -295,7 +384,18 @@ def route() -> dict[str, Any]:
             active_connections[node] += 1
 
         try:
-            res = requests.get(node, timeout=6.0)
+            res = requests.get(
+                node,
+                timeout=6.0,
+                params={
+                    "task": task,
+                    "query_type": query_type,
+                    "key": key,
+                    "start_key": start_key,
+                    "end_key": end_key,
+                    "limit": limit,
+                },
+            )
             res.raise_for_status()
             data = res.json()
             if not isinstance(data, dict):
@@ -311,6 +411,7 @@ def route() -> dict[str, Any]:
 
             metrics.record_success(latency_ms)
             strategy.record_result(node, latency_ms, success=True)
+            node_failure_window[node].append(0)
 
             _append_main([
                 time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -334,6 +435,7 @@ def route() -> dict[str, Any]:
             ])
             print(f"[TIMEOUT] {node}")
             strategy.record_result(node, 6000.0, success=False)
+            node_failure_window[node].append(1)
             tried_nodes.add(node)
 
         except requests.RequestException as e:
@@ -344,6 +446,7 @@ def route() -> dict[str, Any]:
             ])
             print(f"[FAIL] {node}: {e}")
             strategy.record_result(node, 6000.0, success=False)
+            node_failure_window[node].append(1)
             tried_nodes.add(node)
 
         finally:
@@ -374,7 +477,12 @@ def get_stats() -> dict[str, Any]:
     s = metrics.snapshot()
     with connections_lock:
         per_node = {
-            n: {"active": active_connections[n], "handled": node_request_count[n]}
+            n: {
+                "active": active_connections[n],
+                "handled": node_request_count[n],
+                "failure_count_recent": sum(node_failure_window[n]),
+                "latest_metrics": node_metrics.get(n.split("//")[1].replace(":8000", "").replace("node", ""), {}),
+            }
             for n in nodes
         }
     return {**s, "nodes": per_node, "algorithm": ALGORITHM}

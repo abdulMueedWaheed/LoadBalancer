@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import csv
+import json
 import math
 import os
 import random
@@ -33,6 +34,7 @@ DEFAULT_PATTERN     = "steady" # steady | burst | spike
 DEFAULT_LABEL       = "run"
 DEFAULT_REPEAT      = 1
 LOG_DIR             = "logs"
+DEFAULT_WORKLOAD_FILE = "workloads.json"
 ALGO_SHORT = {
     "round_robin": "rr",
     "least_connections": "lc",
@@ -50,10 +52,10 @@ class RequestResult(TypedDict):
     error: str
 
 
-SchedulerFn = Callable[[int, int, float, str, float], list[RequestResult]]
+SchedulerFn = Callable[[int, int, float, str, float, dict[str, str]], list[RequestResult]]
 
 # ── Request worker ────────────────────────────────────────────────────────────
-def _send_request(req_id: int, url: str, timeout: float) -> RequestResult:
+def _send_request(req_id: int, url: str, timeout: float, params: dict[str, str]) -> RequestResult:
     """Send a single request and return a result dict."""
     start = time.time()
     result: RequestResult = {
@@ -66,7 +68,7 @@ def _send_request(req_id: int, url: str, timeout: float) -> RequestResult:
         "error":        "",
     }
     try:
-        r = requests.get(url, timeout=timeout)
+        r = requests.get(url, timeout=timeout, params=params)
         elapsed = (time.time() - start) * 1000
         result["status_code"] = r.status_code
         result["latency_ms"]  = round(elapsed, 3)
@@ -97,13 +99,13 @@ def _send_request(req_id: int, url: str, timeout: float) -> RequestResult:
 
 # Traffic-pattern schedulers 
 def _schedule_steady(n_requests: int, concurrency: int, interval: float,
-                     url: str, timeout: float) -> list[RequestResult]:
+                     url: str, timeout: float, params: dict[str, str]) -> list[RequestResult]:
     """Even, steady stream of requests."""
     results: list[RequestResult] = []
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         futures: dict[Any, int] = {}
         for i in range(1, n_requests + 1):
-            f = pool.submit(_send_request, i, url, timeout)
+            f = pool.submit(_send_request, i, url, timeout, params)
             futures[f] = i
             if interval > 0:
                 time.sleep(interval)
@@ -114,11 +116,11 @@ def _schedule_steady(n_requests: int, concurrency: int, interval: float,
 
 
 def _schedule_burst(n_requests: int, concurrency: int, _interval: float,
-                    url: str, timeout: float) -> list[RequestResult]:
+                    url: str, timeout: float, params: dict[str, str]) -> list[RequestResult]:
     """All requests fired at once with maximum concurrency."""
     results: list[RequestResult] = []
     with ThreadPoolExecutor(max_workers=n_requests) as pool:
-        futures = {pool.submit(_send_request, i, url, timeout): i
+        futures = {pool.submit(_send_request, i, url, timeout, params): i
                    for i in range(1, n_requests + 1)}
         for f in as_completed(futures):
             results.append(f.result())
@@ -126,7 +128,7 @@ def _schedule_burst(n_requests: int, concurrency: int, _interval: float,
 
 
 def _schedule_spike(n_requests: int, concurrency: int, _interval: float,
-                    url: str, timeout: float) -> list[RequestResult]:
+                    url: str, timeout: float, params: dict[str, str]) -> list[RequestResult]:
     """Alternates between calm periods (low rate) and random spikes
     (high concurrency bursts)."""
     results: list[RequestResult] = []
@@ -137,7 +139,7 @@ def _schedule_spike(n_requests: int, concurrency: int, _interval: float,
         # Calm phase: small batch with delay
         calm_size = min(random.randint(2, max(3, concurrency // 3)), n_requests - sent)
         with ThreadPoolExecutor(max_workers=calm_size) as pool:
-            futures = {pool.submit(_send_request, req_id + j, url, timeout): j
+            futures = {pool.submit(_send_request, req_id + j, url, timeout, params): j
                        for j in range(calm_size)}
             for f in as_completed(futures):
                 results.append(f.result())
@@ -150,7 +152,7 @@ def _schedule_spike(n_requests: int, concurrency: int, _interval: float,
         # Spike phase: big burst
         spike_size = min(random.randint(concurrency, concurrency * 2), n_requests - sent)
         with ThreadPoolExecutor(max_workers=spike_size) as pool:
-            futures = {pool.submit(_send_request, req_id + j, url, timeout): j
+            futures = {pool.submit(_send_request, req_id + j, url, timeout, params): j
                        for j in range(spike_size)}
             for f in as_completed(futures):
                 results.append(f.result())
@@ -185,6 +187,21 @@ def _fetch_algorithm_code(base_url: str, timeout: float = 2.0) -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def _load_workload_profile(profile_name: str, file_path: str) -> dict[str, str]:
+    """Load workload params from JSON file by profile name."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            return {}
+        profile = raw.get(profile_name, {})
+        if not isinstance(profile, dict):
+            return {}
+        return {str(k): str(v) for k, v in profile.items()}
+    except Exception:
+        return {}
 
 
 # ── CSV logging ───────────────────────────────────────────────────────────────
@@ -271,9 +288,19 @@ def run_experiment(args: argparse.Namespace) -> None:
     pattern = str(args.pattern)
     label = str(args.label)
     repeat = int(args.repeat)
+    workload_profile = str(args.workload_profile)
+    workload_file = str(args.workload_file)
+    request_params: dict[str, str] = {}
+
+    if workload_profile:
+        request_params = _load_workload_profile(workload_profile, workload_file)
+        if not request_params:
+            print(f"[WARN] workload profile '{workload_profile}' not found in {workload_file}; using empty params.")
 
     algo_code = _fetch_algorithm_code(url)
-    effective_label = algo_code if label == DEFAULT_LABEL else f"{algo_code}_{label}"
+    profile_suffix = f"_{workload_profile}" if workload_profile else ""
+    effective_base = f"{algo_code}{profile_suffix}"
+    effective_label = effective_base if label == DEFAULT_LABEL else f"{effective_base}_{label}"
 
     for run_num in range(1, repeat + 1):
         if repeat > 1:
@@ -283,10 +310,12 @@ def run_experiment(args: argparse.Namespace) -> None:
 
         print(f"[{effective_label}] Sending {requests_count} requests "
               f"(concurrency={concurrency}, pattern={pattern})...")
+        if request_params:
+            print(f"  Workload params: {request_params}")
 
         wall_start = time.time()
         results: list[RequestResult] = scheduler(
-            requests_count, concurrency, interval, url, timeout
+            requests_count, concurrency, interval, url, timeout, request_params
         )
         wall_time = time.time() - wall_start
 
@@ -310,6 +339,8 @@ def main() -> None:
         epilog="""
 Examples:
   python main.py --requests 100 --concurrency 20
+  python main.py --workload-profile db_point_light
+  python main.py --workload-profile db_range_heavy --label expA
   python main.py --pattern burst --requests 50 --label fault_test
   python main.py --repeat 3 --pattern spike --requests 80 --label high_load
         """,
@@ -320,6 +351,8 @@ Examples:
     _: Any = parser.add_argument("--interval",    type=float, default=DEFAULT_INTERVAL,  help="Seconds between request submissions (steady pattern)")
     _: Any = parser.add_argument("--timeout",     type=float, default=DEFAULT_TIMEOUT,   help="Per-request timeout in seconds")
     _: Any = parser.add_argument("--pattern",     choices=list(PATTERNS.keys()), default=DEFAULT_PATTERN, help="Traffic pattern")
+    _: Any = parser.add_argument("--workload-profile", default="", help="Workload profile name from workloads.json")
+    _: Any = parser.add_argument("--workload-file", default=DEFAULT_WORKLOAD_FILE, help="Path to workload profiles JSON file")
     _: Any = parser.add_argument("--label",       default=DEFAULT_LABEL,       help="Optional custom suffix for experiment label")
     _: Any = parser.add_argument("--repeat",      type=int, default=DEFAULT_REPEAT,      help="Number of times to repeat the experiment")
     args = parser.parse_args()
