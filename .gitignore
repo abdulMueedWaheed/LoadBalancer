@@ -1,6 +1,10 @@
 logs/
 *.md
+!README.md
+!submission.md
+!results.md
 *.json
+!workloads.json
 __pycache__/
 *.pyc
 *.pyo
