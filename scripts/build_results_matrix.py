@@ -136,7 +136,7 @@ def main() -> None:
         parsed = parse_filename(path)
         if parsed is None:
             continue
-        if args.label and parsed["label"] != args.label:
+        if args.label and not parsed["label"].startswith(args.label):
             continue
 
         stats = summarize_client_csv(path)

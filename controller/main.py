@@ -199,6 +199,7 @@ class MetricAwareStrategy(LoadBalancerStrategy):
         self._w_queue = 1.5
         self._w_failure = 2.0
         self._stale_after_seconds = 15
+        self._stale_after_seconds = 15
 
     def _node_id_from_url(self, node_url: str) -> str:
         # http://node2:8000 -> "2"

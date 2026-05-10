@@ -121,8 +121,8 @@ def main() -> None:
             raise ValueError(f"Unknown algorithm: {algo}")
 
         set_algorithm_in_compose(compose_path, algo)
-        run(["docker", "compose", "up", "-d", "controller"], cwd=root)
-        time.sleep(2.0)
+        run(["docker", "compose", "up", "-d"], cwd=root)
+        time.sleep(5.0)
 
         for profile in args.profiles:
             for run_num in range(1, args.repeat + 1):
