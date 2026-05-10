@@ -1,0 +1,24 @@
+{
+  "simulate_default": {
+    "task": "simulate"
+  },
+  "db_point_light": {
+    "task": "db_query",
+    "query_type": "point",
+    "key": "42",
+    "limit": "1"
+  },
+  "db_range_heavy": {
+    "task": "db_query",
+    "query_type": "range",
+    "start_key": "100",
+    "end_key": "10000",
+    "limit": "500"
+  },
+  "db_aggregate_mid": {
+    "task": "db_query",
+    "query_type": "aggregate",
+    "start_key": "1",
+    "end_key": "50000"
+  }
+}
