@@ -88,12 +88,13 @@ def _run_db_query(
     end_key: int,
     limit: int,
 ) -> dict[str, Any]:
+    qtype = query_type.strip().lower()
     with DB_LOCK:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         t0 = time.time()
 
-        if query_type == "point":
+        if qtype == "point":
             cur.execute(
                 "SELECT id, shard_key, value, score FROM items WHERE shard_key = ? LIMIT 1",
                 (key,),
@@ -108,7 +109,7 @@ def _run_db_query(
                 "db_query_ms": round(elapsed_ms, 3),
             }
 
-        if query_type == "range":
+        if qtype == "range":
             cur.execute(
                 "SELECT id, shard_key, value, score FROM items WHERE shard_key BETWEEN ? AND ? LIMIT ?",
                 (start_key, end_key, limit),

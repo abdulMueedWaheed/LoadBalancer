@@ -375,7 +375,7 @@ def route(
         with connections_lock:
             safe_conns = active_connections.copy()
 
-        node = strategy.select_node(remaining, safe_conns)
+        node: Optional[str] = strategy.select_node(remaining, safe_conns)
         if not node:
             break
 

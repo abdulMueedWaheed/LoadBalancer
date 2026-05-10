@@ -4,7 +4,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      ALGORITHM: "round_robin"
+      ALGORITHM: "metric_aware"
 
     volumes:
       - ./logs:/app/logs:z
@@ -32,4 +32,3 @@ services:
       MIN_DELAY: "1.5"
       MAX_DELAY: "3"
       TIMEOUT_RATE: "0.15"    # 15% chance of hanging (simulates timeout)
-      CRASH_AFTER: "20"       # Permanently crashes after 20 requests
