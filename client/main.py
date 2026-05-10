@@ -16,10 +16,10 @@ import csv
 import math
 import os
 import random
-import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, TypedDict, cast
 
 import requests
 
@@ -33,12 +33,30 @@ DEFAULT_PATTERN     = "steady" # steady | burst | spike
 DEFAULT_LABEL       = "run"
 DEFAULT_REPEAT      = 1
 LOG_DIR             = "logs"
+ALGO_SHORT = {
+    "round_robin": "rr",
+    "least_connections": "lc",
+    "ucb": "ucb",
+}
+
+
+class RequestResult(TypedDict):
+    req_id: int
+    timestamp: str
+    status_code: int
+    latency_ms: float
+    node: str
+    success: bool
+    error: str
+
+
+SchedulerFn = Callable[[int, int, float, str, float], list[RequestResult]]
 
 # ── Request worker ────────────────────────────────────────────────────────────
-def _send_request(req_id: int, url: str, timeout: float) -> dict:
+def _send_request(req_id: int, url: str, timeout: float) -> RequestResult:
     """Send a single request and return a result dict."""
     start = time.time()
-    result = {
+    result: RequestResult = {
         "req_id":       req_id,
         "timestamp":    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "status_code":  0,
@@ -55,7 +73,11 @@ def _send_request(req_id: int, url: str, timeout: float) -> dict:
 
         if r.status_code == 200:
             body = r.json()
-            result["node"]    = body.get("node", "")
+            if isinstance(body, dict):
+                body_dict = cast(dict[str, Any], body)
+                result["node"] = str(body_dict.get("node", ""))
+            else:
+                result["node"] = ""
             result["success"] = True
         else:
             result["error"] = f"HTTP {r.status_code}"
@@ -75,11 +97,11 @@ def _send_request(req_id: int, url: str, timeout: float) -> dict:
 
 # Traffic-pattern schedulers 
 def _schedule_steady(n_requests: int, concurrency: int, interval: float,
-                     url: str, timeout: float) -> list:
+                     url: str, timeout: float) -> list[RequestResult]:
     """Even, steady stream of requests."""
-    results = []
+    results: list[RequestResult] = []
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {}
+        futures: dict[Any, int] = {}
         for i in range(1, n_requests + 1):
             f = pool.submit(_send_request, i, url, timeout)
             futures[f] = i
@@ -92,9 +114,9 @@ def _schedule_steady(n_requests: int, concurrency: int, interval: float,
 
 
 def _schedule_burst(n_requests: int, concurrency: int, _interval: float,
-                    url: str, timeout: float) -> list:
+                    url: str, timeout: float) -> list[RequestResult]:
     """All requests fired at once with maximum concurrency."""
-    results = []
+    results: list[RequestResult] = []
     with ThreadPoolExecutor(max_workers=n_requests) as pool:
         futures = {pool.submit(_send_request, i, url, timeout): i
                    for i in range(1, n_requests + 1)}
@@ -104,10 +126,10 @@ def _schedule_burst(n_requests: int, concurrency: int, _interval: float,
 
 
 def _schedule_spike(n_requests: int, concurrency: int, _interval: float,
-                    url: str, timeout: float) -> list:
+                    url: str, timeout: float) -> list[RequestResult]:
     """Alternates between calm periods (low rate) and random spikes
     (high concurrency bursts)."""
-    results = []
+    results: list[RequestResult] = []
     sent = 0
     req_id = 1
 
@@ -141,15 +163,32 @@ def _schedule_spike(n_requests: int, concurrency: int, _interval: float,
     return results
 
 
-PATTERNS = {
+PATTERNS: dict[str, SchedulerFn] = {
     "steady": _schedule_steady,
     "burst":  _schedule_burst,
     "spike":  _schedule_spike,
 }
 
 
+def _fetch_algorithm_code(base_url: str, timeout: float = 2.0) -> str:
+    """Fetch active algorithm from controller /stats; fallback to unknown."""
+    stats_url = f"{base_url.rstrip('/')}/stats"
+    try:
+        res = requests.get(stats_url, timeout=timeout)
+        res.raise_for_status()
+        payload = res.json()
+        if isinstance(payload, dict):
+            payload_dict = cast(dict[str, Any], payload)
+            algo = str(payload_dict.get("algorithm", "")).strip().lower()
+            if algo:
+                return ALGO_SHORT.get(algo, algo)
+    except Exception:
+        pass
+    return "unknown"
+
+
 # ── CSV logging ───────────────────────────────────────────────────────────────
-def _save_csv(results: list, label: str, run_num: int):
+def _save_csv(results: list[RequestResult], label: str, run_num: int) -> str:
     os.makedirs(LOG_DIR, exist_ok=True)
     filename = os.path.join(LOG_DIR, f"client_{label}_run{run_num}.csv")
     with open(filename, "w", newline="") as f:
@@ -167,20 +206,19 @@ def _save_csv(results: list, label: str, run_num: int):
 
 
 # ── Summary statistics ────────────────────────────────────────────────────────
-def _percentile(sorted_values: list, pct: float) -> float:
+def _percentile(sorted_values: list[float], pct: float) -> float:
     if not sorted_values:
         return 0.0
     idx = int(math.ceil(pct / 100.0 * len(sorted_values))) - 1
     return sorted_values[max(0, idx)]
 
 
-def _print_summary(results: list, wall_time: float, label: str, run_num: int):
+def _print_summary(results: list[RequestResult], wall_time: float, label: str, run_num: int) -> None:
     total     = len(results)
     successes = [r for r in results if r["success"]]
     failures  = [r for r in results if not r["success"]]
     success_rate = len(successes) / total * 100 if total else 0
 
-    lats_all     = sorted(r["latency_ms"] for r in results)
     lats_success = sorted(r["latency_ms"] for r in successes)
 
     avg_lat = sum(lats_success) / len(lats_success) if lats_success else 0
@@ -223,25 +261,32 @@ def _print_summary(results: list, wall_time: float, label: str, run_num: int):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-def run_experiment(args):
-    scheduler = PATTERNS.get(args.pattern, _schedule_steady)
+def run_experiment(args: argparse.Namespace) -> None:
+    scheduler: SchedulerFn = PATTERNS.get(args.pattern, _schedule_steady)
+    url = str(args.url)
+    requests_count = int(args.requests)
+    concurrency = int(args.concurrency)
+    interval = float(args.interval)
+    timeout = float(args.timeout)
+    pattern = str(args.pattern)
+    label = str(args.label)
+    repeat = int(args.repeat)
 
-    for run_num in range(1, args.repeat + 1):
-        if args.repeat > 1:
+    algo_code = _fetch_algorithm_code(url)
+    effective_label = algo_code if label == DEFAULT_LABEL else f"{algo_code}_{label}"
+
+    for run_num in range(1, repeat + 1):
+        if repeat > 1:
             print(f"\n{'─' * 50}")
-            print(f"  Starting run {run_num}/{args.repeat}")
+            print(f"  Starting run {run_num}/{repeat}")
             print(f"{'─' * 50}")
 
-        print(f"[{args.label}] Sending {args.requests} requests "
-              f"(concurrency={args.concurrency}, pattern={args.pattern})...")
+        print(f"[{effective_label}] Sending {requests_count} requests "
+              f"(concurrency={concurrency}, pattern={pattern})...")
 
         wall_start = time.time()
-        results = scheduler(
-            n_requests=args.requests,
-            concurrency=args.concurrency,
-            interval=args.interval,
-            url=args.url,
-            timeout=args.timeout,
+        results: list[RequestResult] = scheduler(
+            requests_count, concurrency, interval, url, timeout
         )
         wall_time = time.time() - wall_start
 
@@ -252,31 +297,31 @@ def run_experiment(args):
                   f"node={r['node'] or '-':>3} | "
                   f"{r['latency_ms']:>8.1f} ms")
 
-        csv_path = _save_csv(results, args.label, run_num)
+        csv_path = _save_csv(results, effective_label, run_num)
         print(f"  Results saved to {csv_path}")
 
-        _print_summary(results, wall_time, args.label, run_num)
+        _print_summary(results, wall_time, effective_label, run_num)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Load Balancer Stress-Test Client",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py --requests 100 --concurrency 20 --label rr
-  python main.py --pattern burst --requests 50 --label lc
-  python main.py --repeat 3 --pattern spike --requests 80 --label ucb
+  python main.py --requests 100 --concurrency 20
+  python main.py --pattern burst --requests 50 --label fault_test
+  python main.py --repeat 3 --pattern spike --requests 80 --label high_load
         """,
     )
-    parser.add_argument("--url",         default=DEFAULT_URL,         help="Load balancer URL")
-    parser.add_argument("--requests",    type=int, default=DEFAULT_REQUESTS,    help="Total number of requests")
-    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Max concurrent threads")
-    parser.add_argument("--interval",    type=float, default=DEFAULT_INTERVAL,  help="Seconds between request submissions (steady pattern)")
-    parser.add_argument("--timeout",     type=float, default=DEFAULT_TIMEOUT,   help="Per-request timeout in seconds")
-    parser.add_argument("--pattern",     choices=PATTERNS.keys(), default=DEFAULT_PATTERN, help="Traffic pattern")
-    parser.add_argument("--label",       default=DEFAULT_LABEL,       help="Experiment label (e.g. rr, lc, ucb)")
-    parser.add_argument("--repeat",      type=int, default=DEFAULT_REPEAT,      help="Number of times to repeat the experiment")
+    _: Any = parser.add_argument("--url",         default=DEFAULT_URL,         help="Load balancer URL")
+    _: Any = parser.add_argument("--requests",    type=int, default=DEFAULT_REQUESTS,    help="Total number of requests")
+    _: Any = parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Max concurrent threads")
+    _: Any = parser.add_argument("--interval",    type=float, default=DEFAULT_INTERVAL,  help="Seconds between request submissions (steady pattern)")
+    _: Any = parser.add_argument("--timeout",     type=float, default=DEFAULT_TIMEOUT,   help="Per-request timeout in seconds")
+    _: Any = parser.add_argument("--pattern",     choices=list(PATTERNS.keys()), default=DEFAULT_PATTERN, help="Traffic pattern")
+    _: Any = parser.add_argument("--label",       default=DEFAULT_LABEL,       help="Optional custom suffix for experiment label")
+    _: Any = parser.add_argument("--repeat",      type=int, default=DEFAULT_REPEAT,      help="Number of times to repeat the experiment")
     args = parser.parse_args()
 
     run_experiment(args)

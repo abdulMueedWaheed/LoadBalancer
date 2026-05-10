@@ -3,6 +3,8 @@ services:
     build: ./controller
     ports:
       - "8000:8000"
+    environment:
+      ALGORITHM: "least_connections"
 
     volumes:
       - ./logs:/app/logs:z

@@ -7,53 +7,55 @@ import os
 import math
 import threading
 from abc import ABC, abstractmethod
-
-app = FastAPI()
+from typing import Any, Optional, cast
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 
 # ── Algorithm selection ────────────────────────────────────────────────────────
-ALGORITHM = "least_connections"   # "round_robin" | "least_connections" | "ucb"
+DEFAULT_ALGORITHM = "least_connections"
+ALGORITHM = os.getenv("ALGORITHM", DEFAULT_ALGORITHM).strip().lower()
 
-ALGO_PREFIX = {
+ALGO_PREFIX: dict[str, str] = {
     "round_robin":       "rr",
     "least_connections": "lc",
     "ucb":               "ucb",
 }
 
 # ── Log file paths (resolved at startup) ──────────────────────────────────────
-LOG_FILE     = None   # e.g. logs/lc_logs.csv
-FAILURE_FILE = None   # e.g. logs/lc_failures.csv
+log_file_path: Optional[str] = None   # e.g. logs/lc_logs.csv
+failure_file_path: Optional[str] = None   # e.g. logs/lc_failures.csv
 
 # ── Node registry ──────────────────────────────────────────────────────────────
-nodes = [
+nodes: list[str] = [
     "http://node1:8000",
     "http://node2:8000",
     "http://node3:8000",
 ]
 
-active_connections = {node: 0 for node in nodes}
-node_request_count = {node: 0 for node in nodes}
+active_connections: dict[str, int] = {node: 0 for node in nodes}
+node_request_count: dict[str, int] = {node: 0 for node in nodes}
 connections_lock   = threading.Lock()
 
 # ── In-memory metrics tracker ──────────────────────────────────────────────────
 class MetricsTracker:
     def __init__(self):
         self._lock           = threading.Lock()
-        self.total_requests  = 0
-        self.failed_requests = 0
-        self.latencies       = []        # ms, successful only
-        self.start_time      = time.time()
+        self.total_requests: int  = 0
+        self.failed_requests: int = 0
+        self.latencies: list[float] = []        # ms, successful only
+        self.start_time: float = time.time()
 
-    def record_success(self, latency_ms: float):
+    def record_success(self, latency_ms: float) -> None:
         with self._lock:
             self.total_requests += 1
             self.latencies.append(latency_ms)
 
-    def record_failure(self):
+    def record_failure(self) -> None:
         with self._lock:
             self.total_requests  += 1
             self.failed_requests += 1
 
-    def snapshot(self):
+    def snapshot(self) -> dict[str, float | int]:
         with self._lock:
             elapsed = max(time.time() - self.start_time, 1)
             total   = self.total_requests
@@ -71,10 +73,10 @@ metrics = MetricsTracker()
 # ── Strategy pattern ───────────────────────────────────────────────────────────
 class LoadBalancerStrategy(ABC):
     @abstractmethod
-    def select_node(self, active_nodes: list, connections: dict) -> str:
+    def select_node(self, active_nodes: list[str], connections: dict[str, int]) -> Optional[str]:
         pass
 
-    def record_result(self, node: str, latency_ms: float, success: bool):
+    def record_result(self, node: str, latency_ms: float, success: bool) -> None:
         """Called after each request so strategies can learn. Override if needed."""
         pass
 
@@ -83,7 +85,7 @@ class RoundRobinStrategy(LoadBalancerStrategy):
         self._index = 0
         self._lock  = threading.Lock()
 
-    def select_node(self, active_nodes: list, connections: dict) -> str:
+    def select_node(self, active_nodes: list[str], connections: dict[str, int]) -> Optional[str]:
         with self._lock:
             if not active_nodes:
                 return None
@@ -96,7 +98,7 @@ class LeastConnectionsStrategy(LoadBalancerStrategy):
         self._rr    = 0
         self._lock  = threading.Lock()
 
-    def select_node(self, active_nodes: list, connections: dict) -> str:
+    def select_node(self, active_nodes: list[str], connections: dict[str, int]) -> Optional[str]:
         with self._lock:
             if not active_nodes:
                 return None
@@ -121,16 +123,16 @@ class UCBStrategy(LoadBalancerStrategy):
     def __init__(self, c: float = 1.414):
         self._lock        = threading.Lock()
         self._c           = c               # exploration constant (sqrt(2) by default)
-        self._total_pulls = 0
-        self._node_pulls  = {}              # node -> int
-        self._node_reward  = {}             # node -> cumulative reward sum
+        self._total_pulls: int = 0
+        self._node_pulls: dict[str, int]  = {}              # node -> int
+        self._node_reward: dict[str, float]  = {}           # node -> cumulative reward sum
 
-    def _ensure_node(self, node: str):
+    def _ensure_node(self, node: str) -> None:
         if node not in self._node_pulls:
             self._node_pulls[node]  = 0
             self._node_reward[node] = 0.0
 
-    def select_node(self, active_nodes: list, connections: dict) -> str:
+    def select_node(self, active_nodes: list[str], connections: dict[str, int]) -> Optional[str]:
         with self._lock:
             if not active_nodes:
                 return None
@@ -160,7 +162,7 @@ class UCBStrategy(LoadBalancerStrategy):
 
             return best_node
 
-    def record_result(self, node: str, latency_ms: float, success: bool):
+    def record_result(self, node: str, latency_ms: float, success: bool) -> None:
         with self._lock:
             self._ensure_node(node)
             self._total_pulls += 1
@@ -174,25 +176,29 @@ class UCBStrategy(LoadBalancerStrategy):
 
             self._node_reward[node] += reward
 
-algorithms = {
+algorithms: dict[str, LoadBalancerStrategy] = {
     "round_robin":       RoundRobinStrategy(),
     "least_connections": LeastConnectionsStrategy(),
     "ucb":               UCBStrategy(),
 }
 
 # ── CSV helpers ────────────────────────────────────────────────────────────────
-def _append_main(row: list):
-    with open(LOG_FILE, "a", newline="") as f:
+def _append_main(row: list[Any]) -> None:
+    if log_file_path is None:
+        return
+    with open(log_file_path, "a", newline="") as f:
         csv.writer(f).writerow(row)
 
-def _append_failure(row: list):
-    with open(FAILURE_FILE, "a", newline="") as f:
+def _append_failure(row: list[Any]) -> None:
+    if failure_file_path is None:
+        return
+    with open(failure_file_path, "a", newline="") as f:
         csv.writer(f).writerow(row)
 
 # ── Background metrics printer ─────────────────────────────────────────────────
 METRICS_INTERVAL = 5  # seconds
 
-def _live_metrics():
+def _live_metrics() -> None:
     while True:
         time.sleep(METRICS_INTERVAL)
         s = metrics.snapshot()
@@ -216,17 +222,22 @@ def _live_metrics():
         print("=" * 62 + "\n")
 
 # ── Startup ────────────────────────────────────────────────────────────────────
-@app.on_event("startup")
-def startup():
-    global LOG_FILE, FAILURE_FILE
+def initialize_runtime() -> None:
+    global log_file_path, failure_file_path
+
+    if ALGORITHM not in algorithms:
+        valid = ", ".join(sorted(algorithms.keys()))
+        raise RuntimeError(
+            f"Invalid ALGORITHM='{ALGORITHM}'. Valid options: {valid}"
+        )
 
     os.makedirs("logs", exist_ok=True)
     prefix       = ALGO_PREFIX.get(ALGORITHM, ALGORITHM)
-    LOG_FILE     = f"logs/{prefix}_logs.csv"
-    FAILURE_FILE = f"logs/{prefix}_failures.csv"
+    log_file_path     = f"logs/{prefix}_logs.csv"
+    failure_file_path = f"logs/{prefix}_failures.csv"
 
     try:
-        with open(LOG_FILE, "w", newline="") as f:
+        with open(log_file_path, "w", newline="") as f:
             csv.writer(f).writerow([
                 "timestamp", "request_id", "node_selected",
                 "latency_ms", "node_delay_ms", "algorithm",
@@ -237,7 +248,7 @@ def startup():
         print("Main log init failed:", e)
 
     try:
-        with open(FAILURE_FILE, "w", newline="") as f:
+        with open(failure_file_path, "w", newline="") as f:
             csv.writer(f).writerow([
                 "timestamp", "request_id", "node",
                 "error_type", "error_message",
@@ -246,17 +257,26 @@ def startup():
         print("Failure log init failed:", e)
 
     threading.Thread(target=_live_metrics, daemon=True).start()
-    print(f"[controller] algo={ALGORITHM}  log={LOG_FILE}  failures={FAILURE_FILE}")
+    print(f"[controller] algo={ALGORITHM}  log={log_file_path}  failures={failure_file_path}")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    initialize_runtime()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 # ── Route ──────────────────────────────────────────────────────────────────────
 @app.get("/")
-def route():
+def route() -> dict[str, Any]:
     request_id = str(uuid.uuid4())
     ts_start   = time.time()
     strategy   = algorithms.get(ALGORITHM, algorithms["round_robin"])
 
-    tried_nodes = set()
-    last_error  = None
+    tried_nodes: set[str] = set()
+    last_error: Optional[str] = None
 
     while len(tried_nodes) < len(nodes):
         remaining = [n for n in nodes if n not in tried_nodes]
@@ -278,9 +298,12 @@ def route():
             res = requests.get(node, timeout=6.0)
             res.raise_for_status()
             data = res.json()
+            if not isinstance(data, dict):
+                raise requests.RequestException("Unexpected non-object JSON from node")
+            payload = cast(dict[str, Any], data)
 
             latency_ms    = (time.time() - ts_start) * 1000
-            node_delay_ms = data.get("latency", "")
+            node_delay_ms: Any = payload.get("latency", "")
 
             with connections_lock:
                 node_request_count[node] += 1
@@ -301,7 +324,7 @@ def route():
                 n_count,
             ])
 
-            return data
+            return payload
 
         except requests.Timeout as e:
             last_error = str(e)
@@ -337,16 +360,17 @@ def route():
     raise HTTPException(status_code=503, detail=f"All nodes failed: {last_error}")
 
 # ── Node metrics push endpoint ─────────────────────────────────────────────────
-node_metrics: dict = {}
+node_metrics: dict[str, dict[str, Any]] = {}
 
 @app.post("/metrics")
-def receive_metrics(data: dict):
-    node_metrics[data.get("node_id", "?")] = data
+def receive_metrics(data: dict[str, Any]) -> dict[str, str]:
+    node_key = str(data.get("node_id", "?"))
+    node_metrics[node_key] = data
     return {"status": "ok"}
 
 # ── Live stats endpoint ────────────────────────────────────────────────────────
 @app.get("/stats")
-def get_stats():
+def get_stats() -> dict[str, Any]:
     s = metrics.snapshot()
     with connections_lock:
         per_node = {
