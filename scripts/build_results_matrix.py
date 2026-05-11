@@ -18,10 +18,12 @@ def percentile(sorted_values: list[float], pct: float) -> float:
 
 def parse_filename(path: str) -> dict[str, Any] | None:
     """
-    Expected examples:
-      client_lc_db_point_light_matrix_run1.csv
-      client_metric_aware_db_range_heavy_bench_run1.csv
-      client_ucb_db_aggregate_mid_run1.csv
+    Expected examples (new format with pattern):
+      client_lc_db_point_light_matrix_steady_rep1_run1.csv
+      client_metric_aware_db_range_heavy_matrix_burst_rep2_run1.csv
+      client_ucb_db_aggregate_mid_matrix_spike_rep3_run1.csv
+    Legacy (no pattern):
+      client_lc_db_point_light_matrixrep1_run1.csv
     """
     base = os.path.basename(path)
     if not (base.startswith("client_") and base.endswith(".csv")):
@@ -57,20 +59,55 @@ def parse_filename(path: str) -> dict[str, Any] | None:
         # unknown prefix; skip
         return None
 
-    if not tail:
-        profile = "unknown"
-        label = "none"
-    elif len(tail) == 1:
-        profile = tail[0]
-        label = "none"
-    else:
-        # assume last segment is label, rest is profile
-        profile = "_".join(tail[:-1])
-        label = tail[-1]
+    # Try to extract pattern from tail
+    # Known profiles always start with "db_"
+    # New format: [db, point, light, matrix, steady, rep1]
+    # We need to find where the profile ends and label/pattern begins
+    known_patterns = {"steady", "burst", "spike"}
+
+    # Find profile boundary: profile parts are everything until we hit a known label prefix
+    profile_parts: list[str] = []
+    label = "none"
+    pattern = "unknown"
+
+    # Walk through tail to find profile, then extract label+pattern
+    remaining = list(tail)
+
+    tail_str = "_".join(remaining)
+    profile = "unknown"
+    pattern = "unknown"
+    
+    known_profiles = ["db_point_light", "db_range_heavy", "db_mixed_50_50"]
+    known_patterns = ["steady", "burst", "spike"]
+    
+    for kp in known_profiles:
+        if tail_str.startswith(kp):
+            profile = kp
+            break
+            
+    for pat in known_patterns:
+        if f"_{pat}_" in tail_str or tail_str.endswith(f"_{pat}"):
+            pattern = pat
+            break
+            
+    label = tail_str
+    if profile != "unknown" and tail_str.startswith(profile + "_"):
+        label = tail_str[len(profile) + 1:]
 
     return {
         "algorithm": algorithm,
         "profile": profile,
+        "pattern": pattern,
+        "label": label,
+        "run_id": run_id,
+        }
+
+    profile = "_".join(profile_parts) if profile_parts else "unknown"
+
+    return {
+        "algorithm": algorithm,
+        "profile": profile,
+        "pattern": pattern,
         "label": label,
         "run_id": run_id,
     }
@@ -130,7 +167,8 @@ def main() -> None:
         raise FileNotFoundError(f"No client CSV files found with: {pattern}")
 
     per_run_rows: list[dict[str, Any]] = []
-    aggregate_map: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    # Key: (algorithm, profile, pattern, label)
+    aggregate_map: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
 
     for path in files:
         parsed = parse_filename(path)
@@ -143,13 +181,14 @@ def main() -> None:
         row = {
             "algorithm": parsed["algorithm"],
             "profile": parsed["profile"],
+            "pattern": parsed["pattern"],
             "label": parsed["label"],
             "run_id": parsed["run_id"],
             "source_file": os.path.basename(path),
             **stats,
         }
         per_run_rows.append(row)
-        key = (parsed["algorithm"], parsed["profile"], parsed["label"])
+        key = (parsed["algorithm"], parsed["profile"], parsed["pattern"], parsed["label"])
         aggregate_map[key].append(row)
 
     if not per_run_rows:
@@ -165,6 +204,7 @@ def main() -> None:
             [
                 "algorithm",
                 "profile",
+                "pattern",
                 "label",
                 "run_id",
                 "total",
@@ -178,11 +218,12 @@ def main() -> None:
                 "source_file",
             ]
         )
-        for r in sorted(per_run_rows, key=lambda x: (x["algorithm"], x["profile"], x["run_id"])):
+        for r in sorted(per_run_rows, key=lambda x: (x["algorithm"], x["profile"], x["pattern"], x["run_id"])):
             wr.writerow(
                 [
                     r["algorithm"],
                     r["profile"],
+                    r["pattern"],
                     r["label"],
                     r["run_id"],
                     r["total"],
@@ -203,6 +244,7 @@ def main() -> None:
             [
                 "algorithm",
                 "profile",
+                "pattern",
                 "label",
                 "runs",
                 "total_mean",
@@ -216,12 +258,13 @@ def main() -> None:
             ]
         )
         for key in sorted(aggregate_map.keys()):
-            algo, profile, label = key
+            algo, profile, pat, label = key
             rows = aggregate_map[key]
             wr.writerow(
                 [
                     algo,
                     profile,
+                    pat,
                     label,
                     len(rows),
                     f'{mean([float(r["total"]) for r in rows]):.3f}',
@@ -240,3 +283,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

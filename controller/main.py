@@ -33,6 +33,9 @@ nodes: list[str] = [
     "http://node1:8000",
     "http://node2:8000",
     "http://node3:8000",
+    "http://node4:8000",
+    "http://node5:8000",
+    "http://node6:8000",
 ]
 
 active_connections: dict[str, int] = {node: 0 for node in nodes}
@@ -189,17 +192,20 @@ class MetricAwareStrategy(LoadBalancerStrategy):
 
     Lower score is better.
     score = w1*active_connections + w2*(latency_ms/100) + w3*queue_depth + w4*failure_count_recent
+
+    All weights configurable via env vars: MA_W_ACTIVE, MA_W_LATENCY, MA_W_QUEUE, MA_W_FAILURE,
+    MA_STALE_PENALTY, MA_STALE_SECONDS.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._rr = 0
-        self._w_active = 1.0
-        self._w_latency = 0.02
-        self._w_queue = 1.5
-        self._w_failure = 2.0
-        self._stale_after_seconds = 15
-        self._stale_after_seconds = 15
+        self._w_active  = float(os.getenv("MA_W_ACTIVE",  "1.0"))
+        self._w_latency = float(os.getenv("MA_W_LATENCY", "0.02"))
+        self._w_queue   = float(os.getenv("MA_W_QUEUE",   "1.5"))
+        self._w_failure = float(os.getenv("MA_W_FAILURE",  "2.0"))
+        self._stale_penalty = float(os.getenv("MA_STALE_PENALTY", "3.0"))
+        self._stale_after_seconds = float(os.getenv("MA_STALE_SECONDS", "15"))
 
     def _node_id_from_url(self, node_url: str) -> str:
         # http://node2:8000 -> "2"
@@ -244,7 +250,7 @@ class MetricAwareStrategy(LoadBalancerStrategy):
                 ts_epoch = self._parse_ts(raw_ts)
                 if ts_epoch is None or (now_epoch - ts_epoch) > self._stale_after_seconds:
                     # stale feedback penalty; encourages fresher feedback nodes
-                    score += 3.0
+                    score += self._stale_penalty
 
                 if score < best_score:
                     best_score = score
@@ -387,7 +393,7 @@ def route(
         try:
             res = requests.get(
                 node,
-                timeout=6.0,
+                timeout=1.0,
                 params={
                     "task": task,
                     "query_type": query_type,

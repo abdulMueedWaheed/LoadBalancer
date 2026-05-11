@@ -4,12 +4,21 @@
   },
   "db_point_light": {
     "task": "db_query",
+    "operation": "read",
     "query_type": "point",
     "key": "42",
     "limit": "1"
   },
+  "db_point_write": {
+    "task": "db_query",
+    "operation": "write",
+    "query_type": "point",
+    "key": "100",
+    "value": "updated_value"
+  },
   "db_range_heavy": {
     "task": "db_query",
+    "operation": "read",
     "query_type": "range",
     "start_key": "100",
     "end_key": "10000",
@@ -17,8 +26,16 @@
   },
   "db_aggregate_mid": {
     "task": "db_query",
+    "operation": "read",
     "query_type": "aggregate",
     "start_key": "1",
     "end_key": "50000"
+  },
+  "db_mixed_50_50": {
+    "task": "db_query",
+    "operation": "read",
+    "query_type": "point",
+    "key": "5000",
+    "limit": "1"
   }
 }

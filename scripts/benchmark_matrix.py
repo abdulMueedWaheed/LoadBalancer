@@ -82,23 +82,29 @@ def find_latest_csv(log_dir: str, algo_prefix: str, profile: str, label: str) ->
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run algorithm x workload benchmark matrix.")
+    parser = argparse.ArgumentParser(description="Run algorithm x workload x pattern benchmark matrix.")
     parser.add_argument("--project-root", default=".", help="Project root containing docker-compose.yml")
-    parser.add_argument("--requests", type=int, default=90)
-    parser.add_argument("--concurrency", type=int, default=15)
-    parser.add_argument("--pattern", default="steady", choices=["steady", "burst", "spike"])
-    parser.add_argument("--repeat", type=int, default=3, help="Repeats per (algorithm, profile)")
+    parser.add_argument("--requests", type=int, default=500, help="Requests per run (default 500 for realistic benchmark)")
+    parser.add_argument("--concurrency", type=int, default=30, help="Concurrent threads (default 30)")
+    parser.add_argument(
+        "--patterns",
+        nargs="+",
+        default=["steady", "burst", "spike"],
+        choices=["steady", "burst", "spike"],
+        help="Traffic patterns to benchmark (default: all three)",
+    )
+    parser.add_argument("--repeat", type=int, default=3, help="Repeats per (algorithm, profile, pattern)")
     parser.add_argument("--label", default="matrix")
     parser.add_argument("--workload-file", default="workloads.json")
     parser.add_argument(
         "--algorithms",
         nargs="+",
-        default=["least_connections", "ucb", "metric_aware"],
+        default=["round_robin", "least_connections", "ucb", "metric_aware"],
     )
     parser.add_argument(
         "--profiles",
         nargs="+",
-        default=["db_point_light", "db_range_heavy", "db_aggregate_mid"],
+        default=["db_point_light", "db_range_heavy", "db_mixed_50_50"],
     )
     parser.add_argument("--output", default="logs/matrix_summary.csv")
     args = parser.parse_args()
@@ -114,60 +120,76 @@ def main() -> None:
         "metric_aware": "metric_aware",
     }
 
+    total_runs = len(args.algorithms) * len(args.profiles) * len(args.patterns) * args.repeat
+    completed = 0
+
     rows: list[dict[str, Any]] = []
 
     for algo in args.algorithms:
         if algo not in algo_prefix:
             raise ValueError(f"Unknown algorithm: {algo}")
 
+        print(f"\n{'=' * 70}")
+        print(f"  ALGORITHM: {algo}")
+        print(f"{'=' * 70}")
+
         set_algorithm_in_compose(compose_path, algo)
-        run(["docker", "compose", "up", "-d"], cwd=root)
-        time.sleep(5.0)
+        run(["docker", "compose", "up", "--build", "-d"], cwd=root)
+        time.sleep(8.0)  # extra time for build + DB init
 
         for profile in args.profiles:
-            for run_num in range(1, args.repeat + 1):
-                repeat_label = f"{args.label}rep{run_num}"
-                run(
-                    [
-                        "python",
-                        "client/main.py",
-                        "--workload-profile",
-                        profile,
-                        "--workload-file",
-                        args.workload_file,
-                        "--requests",
-                        str(args.requests),
-                        "--concurrency",
-                        str(args.concurrency),
-                        "--pattern",
-                        args.pattern,
-                        "--repeat",
-                        "1",
-                        "--label",
-                        repeat_label,
-                    ],
-                    cwd=root,
-                )
+            for pattern in args.patterns:
+                for run_num in range(1, args.repeat + 1):
+                    completed += 1
+                    repeat_label = f"{args.label}_{pattern}_rep{run_num}"
+                    print(f"\n  [{completed}/{total_runs}] {algo} / {profile} / {pattern} / rep{run_num}")
 
-                csv_path = find_latest_csv(
-                    log_dir=log_dir,
-                    algo_prefix=algo_prefix[algo],
-                    profile=profile,
-                    label=repeat_label,
-                )
-                s = summarize_client_csv(csv_path)
-                rows.append(
-                    {
-                        "algorithm": algo,
-                        "profile": profile,
-                        "repeat_id": run_num,
-                        "requests": args.requests,
-                        "concurrency": args.concurrency,
-                        "pattern": args.pattern,
-                        **s,
-                        "client_csv": os.path.basename(csv_path),
-                    }
-                )
+                    run(
+                        [
+                            "python",
+                            "client/main.py",
+                            "--workload-profile",
+                            profile,
+                            "--workload-file",
+                            args.workload_file,
+                            "--requests",
+                            str(args.requests),
+                            "--concurrency",
+                            str(args.concurrency),
+                            "--pattern",
+                            pattern,
+                            "--repeat",
+                            "1",
+                            "--label",
+                            repeat_label,
+                            "--algo-label",
+                            algo_prefix[algo],
+                        ],
+                        cwd=root,
+                    )
+
+                    # Recovery delay between runs (controller needs to stabilize)
+                    time.sleep(3.0)
+
+                    csv_path = find_latest_csv(
+                        log_dir=log_dir,
+                        algo_prefix=algo_prefix[algo],
+                        profile=profile,
+                        label=repeat_label,
+                    )
+                    s = summarize_client_csv(csv_path)
+                    rows.append(
+                        {
+                            "algorithm": algo,
+                            "profile": profile,
+                            "pattern": pattern,
+                            "repeat_id": run_num,
+                            "requests": args.requests,
+                            "concurrency": args.concurrency,
+                            **s,
+                            "client_csv": os.path.basename(csv_path),
+                        }
+                    )
 
     os.makedirs(os.path.dirname(os.path.join(root, args.output)), exist_ok=True)
     out_path = os.path.join(root, args.output)
@@ -175,10 +197,10 @@ def main() -> None:
         fieldnames = [
             "algorithm",
             "profile",
+            "pattern",
             "repeat_id",
             "requests",
             "concurrency",
-            "pattern",
             "total",
             "success",
             "fail",
@@ -193,8 +215,12 @@ def main() -> None:
         wr.writeheader()
         wr.writerows(rows)
 
-    print(f"Matrix complete. Summary written to: {out_path}")
+    print(f"\n{'=' * 70}")
+    print(f"  MATRIX COMPLETE — {total_runs} runs finished")
+    print(f"  Summary: {out_path}")
+    print(f"{'=' * 70}")
 
 
 if __name__ == "__main__":
     main()
+

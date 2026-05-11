@@ -5,7 +5,14 @@ services:
       - "8000:8000"
     environment:
       ALGORITHM: "metric_aware"
+      MA_W_ACTIVE: "0.5"
+      MA_W_LATENCY: "0.02"
+      MA_W_QUEUE: "1.5"
+      MA_W_FAILURE: "2.0"
+      MA_STALE_PENALTY: "3.0"
+      MA_STALE_SECONDS: "15"
 
+      TIMEOUT_HANG: "5.0"
     volumes:
       - ./logs:/app/logs:z
 
@@ -13,22 +20,68 @@ services:
     build: ./node
     environment:
       NODE_ID: "1"
-      MIN_DELAY: "0.1"
-      MAX_DELAY: "0.5"
-      # Stable node — no failures
+      NODE_ROLE: "authoritative"
+      KEY_RANGE_START: "1"
+      KEY_RANGE_END: "8333"
+      MIN_DELAY: "0.05"
+      MAX_DELAY: "0.15"
+      TIMEOUT_HANG: "5.0"
+      # Authoritative, fast — no failures
 
   node2:
     build: ./node
     environment:
       NODE_ID: "2"
-      MIN_DELAY: "1"
-      MAX_DELAY: "2"
-      CRASH_RATE: "0.1"       # 10% chance of returning HTTP 500
+      NODE_ROLE: "replica"
+      KEY_RANGE_START: "1"
+      KEY_RANGE_END: "8333"
+      MIN_DELAY: "0.3"
+      MAX_DELAY: "0.7"
+      TIMEOUT_HANG: "5.0"
+      CRASH_RATE: "0.05" # 5% chance of crash
 
   node3:
     build: ./node
     environment:
       NODE_ID: "3"
-      MIN_DELAY: "1.5"
-      MAX_DELAY: "3"
-      TIMEOUT_RATE: "0.15"    # 15% chance of hanging (simulates timeout)
+      NODE_ROLE: "replica"
+      KEY_RANGE_START: "1"
+      KEY_RANGE_END: "50000"
+      MIN_DELAY: "0.5"
+      MAX_DELAY: "1.0"
+      TIMEOUT_HANG: "5.0"
+      TIMEOUT_RATE: "0.05" # 5% chance of timeout
+
+  node4:
+    build: ./node
+    environment:
+      NODE_ID: "4"
+      NODE_ROLE: "replica"
+      KEY_RANGE_START: "1"
+      KEY_RANGE_END: "50000"
+      MIN_DELAY: "0.4"
+      MAX_DELAY: "0.9"
+      TIMEOUT_HANG: "5.0"
+
+  node5:
+    build: ./node
+    environment:
+      NODE_ID: "5"
+      NODE_ROLE: "replica"
+      KEY_RANGE_START: "1"
+      KEY_RANGE_END: "50000"
+      MIN_DELAY: "0.6"
+      MAX_DELAY: "1.2"
+      TIMEOUT_HANG: "5.0"
+      CRASH_RATE: "0.03" # 3% crash rate
+
+  node6:
+    build: ./node
+    environment:
+      NODE_ID: "6"
+      NODE_ROLE: "replica"
+      KEY_RANGE_START: "1"
+      KEY_RANGE_END: "50000"
+      MIN_DELAY: "0.7"
+      MAX_DELAY: "1.5"
+      TIMEOUT_HANG: "5.0"

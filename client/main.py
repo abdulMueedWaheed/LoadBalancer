@@ -39,6 +39,7 @@ ALGO_SHORT = {
     "round_robin": "rr",
     "least_connections": "lc",
     "ucb": "ucb",
+    "metric_aware": "metric_aware",
 }
 
 
@@ -117,9 +118,9 @@ def _schedule_steady(n_requests: int, concurrency: int, interval: float,
 
 def _schedule_burst(n_requests: int, concurrency: int, _interval: float,
                     url: str, timeout: float, params: dict[str, str]) -> list[RequestResult]:
-    """All requests fired at once with maximum concurrency."""
+    """All requests queued instantly (no pacing), processed at concurrency level."""
     results: list[RequestResult] = []
-    with ThreadPoolExecutor(max_workers=n_requests) as pool:
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
         futures = {pool.submit(_send_request, i, url, timeout, params): i
                    for i in range(1, n_requests + 1)}
         for f in as_completed(futures):
@@ -297,7 +298,12 @@ def run_experiment(args: argparse.Namespace) -> None:
         if not request_params:
             print(f"[WARN] workload profile '{workload_profile}' not found in {workload_file}; using empty params.")
 
-    algo_code = _fetch_algorithm_code(url)
+    # Use explicit algo label if provided (from benchmark script), else auto-detect
+    algo_label_override = getattr(args, 'algo_label', '') or ''
+    if algo_label_override:
+        algo_code = algo_label_override
+    else:
+        algo_code = _fetch_algorithm_code(url)
     profile_suffix = f"_{workload_profile}" if workload_profile else ""
     effective_base = f"{algo_code}{profile_suffix}"
     effective_label = effective_base if label == DEFAULT_LABEL else f"{effective_base}_{label}"
@@ -355,6 +361,7 @@ Examples:
     _: Any = parser.add_argument("--workload-file", default=DEFAULT_WORKLOAD_FILE, help="Path to workload profiles JSON file")
     _: Any = parser.add_argument("--label",       default=DEFAULT_LABEL,       help="Optional custom suffix for experiment label")
     _: Any = parser.add_argument("--repeat",      type=int, default=DEFAULT_REPEAT,      help="Number of times to repeat the experiment")
+    _: Any = parser.add_argument("--algo-label",   default="",                            help="Force algorithm label prefix (skips /stats auto-detection)")
     args = parser.parse_args()
 
     run_experiment(args)
