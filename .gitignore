@@ -3,6 +3,7 @@ logs/
 !README.md
 !submission.md
 !results.md
+!report.md
 *.json
 !workloads.json
 __pycache__/
