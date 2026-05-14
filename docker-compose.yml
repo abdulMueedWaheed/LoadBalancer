@@ -6,10 +6,10 @@ services:
     environment:
       ALGORITHM: "metric_aware"
       MA_W_ACTIVE: "0.5"
-      MA_W_LATENCY: "0.02"
+      MA_W_LATENCY: "0.08"
       MA_W_QUEUE: "1.5"
       MA_W_FAILURE: "2.0"
-      MA_STALE_PENALTY: "3.0"
+      MA_STALE_PENALTY: "1.0"
       MA_STALE_SECONDS: "15"
 
       TIMEOUT_HANG: "5.0"
@@ -20,68 +20,58 @@ services:
     build: ./node
     environment:
       NODE_ID: "1"
-      NODE_ROLE: "authoritative"
-      KEY_RANGE_START: "1"
-      KEY_RANGE_END: "8333"
-      MIN_DELAY: "0.05"
-      MAX_DELAY: "0.15"
+      MIN_DELAY: "0.35"
+      MAX_DELAY: "0.80"
       TIMEOUT_HANG: "5.0"
-      # Authoritative, fast — no failures
+      CRASH_RATE: "0.04"
+      TIMEOUT_RATE: "0.03"
 
   node2:
     build: ./node
     environment:
       NODE_ID: "2"
-      NODE_ROLE: "replica"
-      KEY_RANGE_START: "1"
-      KEY_RANGE_END: "8333"
-      MIN_DELAY: "0.3"
-      MAX_DELAY: "0.7"
+      MIN_DELAY: "0.45"
+      MAX_DELAY: "1.00"
       TIMEOUT_HANG: "5.0"
-      CRASH_RATE: "0.05" # 5% chance of crash
+      CRASH_RATE: "0.06"
+      TIMEOUT_RATE: "0.04"
 
   node3:
     build: ./node
     environment:
       NODE_ID: "3"
-      NODE_ROLE: "replica"
-      KEY_RANGE_START: "1"
-      KEY_RANGE_END: "50000"
-      MIN_DELAY: "0.5"
-      MAX_DELAY: "1.0"
+      MIN_DELAY: "0.55"
+      MAX_DELAY: "1.20"
       TIMEOUT_HANG: "5.0"
-      TIMEOUT_RATE: "0.05" # 5% chance of timeout
+      CRASH_RATE: "0.05"
+      TIMEOUT_RATE: "0.06"
 
   node4:
     build: ./node
     environment:
       NODE_ID: "4"
-      NODE_ROLE: "replica"
-      KEY_RANGE_START: "1"
-      KEY_RANGE_END: "50000"
-      MIN_DELAY: "0.4"
-      MAX_DELAY: "0.9"
+      MIN_DELAY: "0.50"
+      MAX_DELAY: "1.10"
       TIMEOUT_HANG: "5.0"
+      CRASH_RATE: "0.05"
+      TIMEOUT_RATE: "0.04"
 
   node5:
     build: ./node
     environment:
       NODE_ID: "5"
-      NODE_ROLE: "replica"
-      KEY_RANGE_START: "1"
-      KEY_RANGE_END: "50000"
-      MIN_DELAY: "0.6"
-      MAX_DELAY: "1.2"
+      MIN_DELAY: "0.65"
+      MAX_DELAY: "1.30"
       TIMEOUT_HANG: "5.0"
-      CRASH_RATE: "0.03" # 3% crash rate
+      CRASH_RATE: "0.07"
+      TIMEOUT_RATE: "0.05"
 
   node6:
     build: ./node
     environment:
       NODE_ID: "6"
-      NODE_ROLE: "replica"
-      KEY_RANGE_START: "1"
-      KEY_RANGE_END: "50000"
-      MIN_DELAY: "0.7"
-      MAX_DELAY: "1.5"
+      MIN_DELAY: "0.75"
+      MAX_DELAY: "1.60"
       TIMEOUT_HANG: "5.0"
+      CRASH_RATE: "0.06"
+      TIMEOUT_RATE: "0.05"

@@ -183,6 +183,7 @@ def main() -> None:
                             "algorithm": algo,
                             "profile": profile,
                             "pattern": pattern,
+                            "label": repeat_label,
                             "repeat_id": run_num,
                             "requests": args.requests,
                             "concurrency": args.concurrency,
@@ -198,6 +199,7 @@ def main() -> None:
             "algorithm",
             "profile",
             "pattern",
+            "label",
             "repeat_id",
             "requests",
             "concurrency",
@@ -223,4 +225,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

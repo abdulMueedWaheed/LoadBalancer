@@ -259,6 +259,72 @@ This is caused by three compounding factors:
 
 ### 6.3 Round Robin and Least Connections: Surprisingly Strong Baselines
 
+---
+
+### 6.4 Run 2: Higher Heterogeneity + Higher Failure Proneness
+
+Run 2 was executed after:
+- increasing delay ranges for all nodes,
+- enabling crash/timeout rates on all nodes,
+- tuning `metric_aware` to increase latency emphasis (`MA_W_LATENCY=0.08`) and reduce stale penalty (`MA_STALE_PENALTY=1.0`).
+
+#### 6.4.1 Aggregated Means by Algorithm, Profile, and Pattern
+
+| Algorithm | Profile | Pattern | Avg (ms) | P95 (ms) | P99 (ms) | Max (ms) |
+|---|---|---|---:|---:|---:|---:|
+| least_connections | db_mixed_50_50 | burst | 135.78 | 432.82 | 1103.65 | 1768.66 |
+| least_connections | db_mixed_50_50 | steady | 145.78 | 730.36 | 1104.65 | 1733.98 |
+| least_connections | db_point_light | burst | 150.19 | 736.62 | 1113.61 | 1769.92 |
+| least_connections | db_point_light | steady | 149.96 | 452.83 | 1121.38 | 1770.05 |
+| least_connections | db_range_heavy | burst | 144.01 | 738.06 | 1093.78 | 2052.59 |
+| least_connections | db_range_heavy | steady | 137.23 | 127.45 | 1104.57 | 2066.22 |
+| metric_aware | db_mixed_50_50 | burst | 344.04 | 420.68 | 1387.31 | 1726.65 |
+| metric_aware | db_mixed_50_50 | steady | 302.33 | 634.52 | 1319.13 | 1993.34 |
+| metric_aware | db_point_light | burst | 175.85 | 193.60 | 1159.73 | 2513.88 |
+| metric_aware | db_point_light | steady | 163.64 | 747.25 | 1124.55 | 1806.09 |
+| metric_aware | db_range_heavy | burst | 246.59 | 305.77 | 1228.86 | 1856.79 |
+| metric_aware | db_range_heavy | steady | 217.87 | 539.88 | 1202.08 | 1815.44 |
+| round_robin | db_mixed_50_50 | burst | 130.87 | 421.89 | 1097.85 | 1429.68 |
+| round_robin | db_mixed_50_50 | steady | 135.62 | 138.08 | 1097.23 | 1732.04 |
+| round_robin | db_point_light | burst | 145.80 | 450.05 | 1105.53 | 1439.91 |
+| round_robin | db_point_light | steady | 131.35 | 143.75 | 1101.83 | 1451.32 |
+| round_robin | db_range_heavy | burst | 129.47 | 725.79 | 1084.58 | 1429.74 |
+| round_robin | db_range_heavy | steady | 145.67 | 149.06 | 1113.69 | 2056.48 |
+| ucb | db_mixed_50_50 | burst | 129.52 | 126.93 | 1063.90 | 2061.05 |
+| ucb | db_mixed_50_50 | steady | 130.76 | 135.97 | 1092.03 | 2039.80 |
+| ucb | db_point_light | burst | 138.58 | 437.42 | 1104.75 | 1433.94 |
+| ucb | db_point_light | steady | 141.59 | 149.73 | 1103.40 | 1744.45 |
+| ucb | db_range_heavy | burst | 132.57 | 434.22 | 1089.49 | 1420.91 |
+| ucb | db_range_heavy | steady | 136.17 | 131.48 | 1101.36 | 2378.07 |
+
+#### 6.4.2 Pattern-Level Summary
+
+| Algorithm | Pattern | Avg (ms) | P95 (ms) | P99 (ms) | Max (ms) |
+|---|---|---:|---:|---:|---:|
+| least_connections | burst | 143.33 | 635.83 | 1103.68 | 1863.72 |
+| least_connections | steady | 144.32 | 436.88 | 1110.20 | 1856.75 |
+| metric_aware | burst | 255.49 | 306.68 | 1258.64 | 2032.44 |
+| metric_aware | steady | 227.95 | 640.55 | 1215.25 | 1871.63 |
+| round_robin | burst | 135.38 | 532.58 | 1095.99 | 1433.11 |
+| round_robin | steady | 137.55 | 143.63 | 1104.25 | 1746.61 |
+| ucb | burst | 133.56 | 332.86 | 1086.05 | 1638.63 |
+| ucb | steady | 136.17 | 139.06 | 1098.93 | 2054.10 |
+
+#### 6.4.3 Run 2 Winners (Average Latency)
+
+- `db_mixed_50_50` burst: **UCB** (129.52 ms)
+- `db_mixed_50_50` steady: **UCB** (130.76 ms)
+- `db_point_light` burst: **UCB** (138.58 ms)
+- `db_point_light` steady: **Round Robin** (131.35 ms)
+- `db_range_heavy` burst: **Round Robin** (129.47 ms)
+- `db_range_heavy` steady: **UCB** (136.17 ms)
+
+#### 6.4.4 Run 2 Interpretation
+
+1. Under higher heterogeneity and broader failures, **UCB and Round Robin remain the strongest** on average latency.
+2. **Metric-Aware still underperforms** despite tuning (`MA_W_LATENCY` up, `MA_STALE_PENALTY` down), indicating more aggressive redesign of score scaling/normalization may be needed.
+3. **Least Connections stays competitive** but is not the top performer across mixed scenarios.
+
 Both static/heuristic algorithms perform within 3% of UCB on most workloads. This is because:
 
 - All nodes handle all keys — there's no data locality to exploit
@@ -267,7 +333,7 @@ Both static/heuristic algorithms perform within 3% of UCB on most workloads. Thi
 
 The baselines are strong precisely because the retry mechanism acts as an implicit adaptation layer: if a node times out, the request is automatically retried on another node. This means the **worst-case latency is bounded by retry overhead**, not algorithm quality.
 
-### 6.4 When UCB Would Excel
+### 6.5 When UCB Would Excel
 
 The advantage of UCB over static algorithms grows with:
 
@@ -276,7 +342,7 @@ The advantage of UCB over static algorithms grows with:
 - **Larger node counts**: With 50+ nodes, Round Robin wastes requests on slow nodes; UCB converges to the fast subset
 - **No retry mechanism**: Without retries, the cost of choosing a bad node is much higher
 
-### 6.5 Limitations
+### 6.6 Limitations
 
 1. **Local containerized network**: No real network variance; latency is entirely from simulated node delays
 2. **Homogeneous key ranges**: All nodes handle all keys; no data locality to optimize
@@ -285,34 +351,17 @@ The advantage of UCB over static algorithms grows with:
 5. **Single controller**: The controller is a bottleneck; real systems use distributed routing
 6. **Metric-Aware not tuned**: Weights are fixed; production systems would use adaptive tuning
 
-### 6.6 Can Metric-Aware Be Rescued? Weight Analysis
+### 6.7 Updated Design Choices After Run 2
 
-The poor performance of Metric-Aware raises a natural question: **are the weights simply wrong?**
+Based on the higher-heterogeneity and higher-failure run, we made and retained the following choices:
 
-Analysis of the default weights reveals structural problems:
+1. Keep a strong baseline set (`round_robin`, `least_connections`, `ucb`, `metric_aware`) and compare all four on identical traffic/workload settings.
+2. Increase node heterogeneity and failure pressure in Docker profiles to expose algorithm behavior under stress, rather than only under mild conditions.
+3. Keep retry logic enabled to reflect practical availability requirements, while evaluating latency as the primary differentiator.
+4. Keep metric-aware parameters externally configurable (`MA_*` env vars) so routing policy can be tuned without code edits.
+5. Preserve automation-first evaluation with `benchmark_matrix.py` and `build_results_matrix.py` to ensure repeatability and fair comparison.
 
-| Weight | Default | Effective Contribution | Problem |
-|--------|---------|----------------------|---------|
-| `w_active` (connections) | 1.0 | Dominates scoring | Same signal as Least Connections |
-| `w_latency` | 0.02 | ~1% of score for 500ms latency | **Far too low** — latency is the key signal |
-| `w_queue` (queue depth) | 1.5 | High | Lagged signal — stale by the time it arrives |
-| `w_failure` | 2.0 | High for failing nodes | Good, but failure is rare (3–5%) |
-| `stale_penalty` | +3.0 | Dominates first 15s | **Catastrophic** — randomizes early routing |
-
-The core issue: the **latency weight is 50× lower than the connection weight**. This means Metric-Aware is effectively a noisier version of Least Connections, not a latency-optimized router.
-
-**Weight tuning infrastructure**: All weights are now configurable via environment variables (`MA_W_ACTIVE`, `MA_W_LATENCY`, `MA_W_QUEUE`, `MA_W_FAILURE`, `MA_STALE_PENALTY`, `MA_STALE_SECONDS`). A grid search script (`scripts/tune_weights.py`) is included that tests combinations and reports the best configuration:
-
-```bash
-python scripts/tune_weights.py --requests 200 --profile db_point_light
-```
-
-The grid explores 192 weight combinations including:
-- Latency weight: [0.02, 0.2, 0.5, 1.0] — testing whether latency should dominate
-- Stale penalty: [0.5, 1.5, 3.0] — testing the impact of the cold-start problem
-- Queue weight: [0.5, 1.5] — testing whether push-based queue depth helps or hurts
-
-**Hypothesis**: An optimally tuned Metric-Aware (high latency weight, low stale penalty) would converge toward UCB-like behavior — because latency IS the signal UCB already uses. This suggests that UCB is not just simpler, but **structurally better**: it learns the right signal importance automatically rather than requiring manual weight tuning.
+The main takeaway from these choices is methodological: the system now emphasizes controlled, repeatable stress testing over one-off demonstrations.
 
 ---
 
@@ -320,55 +369,57 @@ The grid explores 192 weight combinations including:
 
 ### 7.1 Hypothesis Evaluation
 
-> *A load balancer using push-based feedback with online learning (MAB) can reduce tail latency and improve load distribution compared to traditional approaches.*
+> A load balancer using push-based feedback with online learning (MAB) can reduce latency and improve routing quality under dynamic conditions.
 
-**Partially supported**:
+Result: **partially supported**.
 
-- ✅ UCB achieves the **best average latency on mixed workloads** and the **lowest max latency** across all workloads
-- ✅ UCB is the only adaptive algorithm that **improves under burst traffic** on heavy queries
-- ✅ UCB outperforms the multi-signal Metric-Aware approach by 59–147%, demonstrating that a clean learning signal matters more than signal quantity
-- ⚠️ The improvement over simple baselines (RR, LC) is **modest** (0.5–2.4%) because the retry mechanism masks node selection quality
-- ⚠️ Push-based feedback (used by Metric-Aware) **does not improve results** in its current form — the asynchronous feedback introduces staleness that hurts routing quality
+- `UCB` and `Round Robin` were consistently strongest in Run 2 average latency across most profile/pattern combinations.
+- `Least Connections` remained competitive and close to the top performers in multiple scenarios.
+- `Metric-Aware` remained weaker in this configuration even after latency-weight and stale-penalty adjustments.
 
-### 7.2 Key Findings
+This indicates that adaptive routing is not automatically superior; gains are scenario-dependent and highly sensitive to signal quality and scoring design.
 
-1. **UCB provides the best risk-adjusted routing**: Competitive average latency with significantly lower tail latency (max 752ms vs 1069ms for RR)
+### 7.2 Updated Findings
 
-2. **More metrics ≠ better decisions**: Metric-Aware's four signals add noise rather than information at this scale. A single clean signal (UCB's latency-based reward) outperforms a complex multi-signal approach.
+1. Under stronger heterogeneity/failure stress, **UCB remained a robust top performer** (especially on mixed and burst scenarios).
+2. **Simple baselines remained surprisingly strong**, suggesting practical value in low-overhead strategies under this workload mix.
+3. **Metric richness alone did not guarantee better routing**; score construction and signal freshness handling still dominate outcomes.
+4. All algorithms preserved high reliability due to retry behavior; therefore, latency/tail metrics remain the primary evaluation target.
 
-3. **Retry logic is a powerful equalizer**: The controller's retry mechanism (try all 6 nodes before failing) makes all algorithms achieve 100% success rate. This means algorithm differences manifest in **latency**, not reliability.
+### 7.3 Practical Interpretation
 
-4. **Exploration matters**: UCB's exploration term prevents "starvation" of underused nodes, ensuring that temporarily slow nodes get re-evaluated. This is why UCB handles burst traffic better than Metric-Aware.
+For this project’s current architecture and workload:
+- If simplicity is prioritized: `least_connections` or `round_robin` are viable.
+- If adaptive behavior is desired with limited complexity: `ucb` is the best current candidate.
+- `metric_aware` requires deeper redesign (normalization, stale handling, and/or dynamic weighting) before it can be considered production-competitive.
 
-### 7.3 Future Work
+### 7.4 Next Steps
 
-1. **Adaptive weight learning** for Metric-Aware (gradient descent on routing quality)
-2. **Data-locality-aware routing** (shard-aware key range routing)
-3. **Larger-scale testing** (50+ nodes, geographically distributed)
-4. **Thompson Sampling** as an alternative to UCB (better empirical performance in bandit literature)
-5. **Contextual bandits** that incorporate query type as a feature (e.g., route range queries to fast-disk nodes)
+1. Run a second tuning pass focused on score normalization (not only weight magnitude changes).
+2. Add one more realistic workload class (e.g., compression) and rerun the same matrix.
+3. Report confidence intervals/variance bands in addition to means for stronger statistical claims.
+4. Extend analysis with run-to-run stability metrics (sensitivity under burst + failure combinations).
 
 ---
 
 ## 8. Reproducibility
 
-All experiments are fully reproducible from this repository:
+All experiments are reproducible with the repository scripts:
 
 ```bash
-# Run full benchmark matrix
-docker compose down
-rm -rf logs/*
+# Run matrix (example)
 python scripts/benchmark_matrix.py \
   --requests 500 --concurrency 30 --repeat 3 \
   --algorithms round_robin least_connections ucb metric_aware \
   --profiles db_point_light db_range_heavy db_mixed_50_50 \
-  --patterns steady burst
+  --patterns steady burst \
+  --label run2
 
-# Generate results
-python scripts/generate_results.py --input logs/matrix_summary.csv --output results.md
+# Build aggregated matrix from client logs
+python scripts/build_results_matrix.py --output scripts/results_matrix.csv
 ```
 
-**Benchmark data**: `logs/matrix_summary.csv` (72 per-run data points)  
-**Aggregated results**: `results.md` (auto-generated from benchmark data)  
-**Configuration**: `docker-compose.yml`, `workloads.json`  
-**Dashboard**: `scripts/dashboard.py` (Streamlit interactive visualization)
+Primary artifacts:
+- Per-run benchmark summary: `logs/matrix_summary.csv`
+- Aggregated matrix: `scripts/results_matrix.csv`
+- Configuration: `docker-compose.yml`, `workloads.json`
